@@ -1,3 +1,7 @@
+/-
+TODO: Clean up code & document for AAAI!!!
+-/
+
 import Mathlib.Tactic.LibrarySearch
 import Mathlib.Tactic.NthRewrite
 import Mathlib.Mathport.Syntax
@@ -2684,8 +2688,7 @@ theorem hebb_reduction (net : BFNN) (A B : Set ℕ) :
           cases h
 
           ---------------------------------------
-          -- Case 2.1: n ∉ Prop(A)
-          -- or all m⟶n ∉ Prop(A) ∩ Prop(B ∪ ...)  
+          -- Case 2.1: n ∉ Prop(A)  
           ---------------------------------------
           case inl h₂ => 
             -- Apply [hebb_activ_equal₁]
@@ -2712,8 +2715,7 @@ theorem hebb_reduction (net : BFNN) (A B : Set ℕ) :
             exact (symm (IH Lm h₃ m hLm).to_eq).to_iff
 
           ---------------------------------------
-          -- Case 2.1: n ∉ Prop(A)
-          -- or all m⟶n ∉ Prop(A) ∩ Prop(B ∪ ...)  
+          -- Case 2.1: all m⟶n ∉ Prop(A) ∩ Prop(B ∪ ...)  
           ---------------------------------------
           case inr h₂ => 
             simp
