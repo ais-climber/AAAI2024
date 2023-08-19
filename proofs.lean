@@ -1,55 +1,62 @@
-/-
-TODO: Clean up code & document for AAAI!!!
--/
+---------------------------------------------------------------------
+-- AAAI 2024 Submission 12181
+-- What do Hebbian Learners Learn?
+-- Reduction Axioms for Unstable Hebbian Learning
+-- 
+-- This file contains the Lean code for our submission.  As explained
+-- in the technical appendix, the main point of using the proof 
+-- assistant Lean was to get the proofs of
+--    - theorem hebb_extens
+--    - theorem hebb_updated_path
+--    - theorem reach_of_hebb_prop
+--    - theorem hebb_reduction
+-- right.  Our vision was to have all of the supporting lemmas 
+-- verified as well, but time ran out.  (We plan on fully verifying 
+-- these claims in Lean by the AAAI-24 author feedback window.)
+-- 
+-- This file is searchable.  If you want to find the Lean definition
+-- and theorem corresponding to the one in the paper, just press
+-- Ctrl+F and type, e.g.,
+--    - "Definition 4"
+--    - "Lemma 2"
+--    - "Theorem 3"
+-- and so on.  Note that not everything was defined/included in
+-- Lean (e.g., the semantics and completeness).  Conversely, not
+-- everying in this file was included in the paper --- Lean often
+-- needs very basic things spelled out for it that are fairly obvious
+-- to a theoretical AAAI audience (e.g., Hebbian update preserves
+-- predecessors)
+---------------------------------------------------------------------
 
-import Mathlib.Tactic.LibrarySearch
-import Mathlib.Tactic.NthRewrite
 import Mathlib.Mathport.Syntax
-import Std.Tactic.ShowTerm
-import Lean.Meta.Tactic.Simp.Main
-import Mathlib.Tactic.Basic
-import Mathlib.Data.List.Sigma
-import Mathlib.Data.Real.Basic
-
-import Lean.Parser.Tactic
-import Mathlib.Init.Set
-import Mathlib.Data.List.Defs
-import Mathlib.Init.Propext
-import Mathlib.Data.Set.Basic
-import Mathlib.Logic.Basic
-import Mathlib.Logic.Function.Basic
-
 open Set
-open Tactic
 open Classical
 
 -------------------------------------------------
 -- Weighted Directed Graphs
 -- 
--- Since graphs are internally represented by lists,
--- we can just do induction on this inner list.
--- 
--- It's common for graph theory proofs to go by
--- induction on the graph:  "Suppose P holds for the
--- subgraph, and now add a new node."  In this case
--- what you probably want is to do induction on
--- *Graph.vertices.reverse*, so that each new node
--- can only "see" those nodes that come *before* it.
+-- These definitions are so basic, they're not
+-- spelled out in the paper.  Skip to [Definition 1]
+-- to see our definition of a feed-forward net.
 -- 
 -- NOTE: For hygiene, we expect that the vertices
 -- are natural numbers given in order, i.e. 0, 1, 2, ...
 -- In principle, you can pick any other labels for your 
--- vertices, but I will be relying on the fact that they come
--- in this order.  My apologies.
+-- vertices, but we will rely on the fact that they come
+-- in this order.
 -- 
--- WARNING: We will also assume that graphs are acyclic.
--- But NOTHING in this file directly enforces that.
--- Whenever I construct a new graph, I will check that
--- it preserves acyclic-ness.  But when making a graph
--- from scratch, kindly refrain from creating cycles.
+-- WARNING: We assume that graphs are acyclic and
+-- fully connected.  Nothing in this file direclty
+-- enforces 'acyclic' except for hygiene (just please
+-- don't use cycles in graphs!)
+-- 
+-- As for 'fully connected', this condition is captured
+-- by the axiom 'connected' (which we state after we
+-- define the layers of the graph.)
 -- 
 -- These graphs are based on Peter Kementzey's 
--- implementation, but modified slightly.
+-- implementation, but modified slightly.  See
+-- https://lean-forward.github.io/pubs/kementzey_bsc_thesis.pdf
 -------------------------------------------------
 
 -- α is the type of the nodes
@@ -67,8 +74,7 @@ structure Graph (α : Type) (β : Type) where
 deriving Repr
 
 -- Notice that this graph is acyclic, since each predecessor
--- list only refers to nodes above the current node.  This
--- is foreshadowing.
+-- list only refers to nodes above the current node.
 def graphA : Graph ℕ ℚ :=
   ⟨[⟨0, [⟨1, 0.5⟩, ⟨2, 0.6⟩, ⟨3, 0.7⟩]⟩, 
     ⟨1, [⟨2, 0.8⟩, ⟨3, 0.9⟩]⟩, 
@@ -78,13 +84,6 @@ def graphA : Graph ℕ ℚ :=
 #check graphA
 #eval graphA
 
-
--------------------------------------------------
--- Graph functions
--------------------------------------------------
-
--- TODO: Make graph functions computable! (this shouldn't be
--- hard -- right now it just depends on 'Prop')
 namespace Graph
 
 def get_vertices (g : Graph ℕ ℚ) : List ℕ :=
@@ -139,8 +138,6 @@ def getEdgeWeight (g : Graph ℕ ℚ) (m n : ℕ) : ℚ :=
 #eval getEdgeWeight graphA 1 3
 #eval getEdgeWeight graphA 4 2
 
-
-
 inductive hasPath (g : Graph ℕ ℚ) : ℕ → ℕ → Prop where
   | trivial {u : ℕ} :
       hasPath g u u
@@ -153,13 +150,12 @@ theorem hasPath_trans {u v w : ℕ} (g : Graph ℕ ℚ) :
 --------------------------------------------------------------------
   intro (h₁ : hasPath g u v)
   intro (h₂ : hasPath g v w)
-
+  
   induction h₂
   case trivial => exact h₁
   case from_path x y _ edge_xy path_ux => 
     exact hasPath.from_path path_ux edge_xy
-
-
+  
 def is_refl (g : Graph ℕ ℚ) : Prop := ∀ (u : ℕ), 
   u ∈ g.get_vertices → g.hasEdge u u
 
@@ -174,79 +170,23 @@ def is_acyclic (g : Graph ℕ ℚ) : Prop := ∀ (u v : ℕ),
 
 end Graph
 
--------------------------------------------------
--- Activation functions
--------------------------------------------------
-def binary_step (x : ℚ) : ℚ :=
-  if x > 0 then 1 else 0
 
---------------------------------------------------------------------
-theorem binary_step_is_binary (x : ℚ) :
-    (binary_step x = 0) ∨ (binary_step x = 1) := by
---------------------------------------------------------------------
-      -- simp [binary_step]
+/-══════════════════════════════════════════════════════════════════
+  Feed-forward Neural Nets
+══════════════════════════════════════════════════════════════════-/
 
-      cases (lt_or_ge 0 x) with
-
-      -- Case 1: 0 < x
-      | inl case1 =>
-          have (h : binary_step x = 1) :=
-            by
-              simp only [binary_step]
-              rw [(if_pos case1)]
-          exact Or.inr h
-
-      -- Case 2: ¬ (0 < x)
-      | inr case2 =>
-          have (h : binary_step x = 0) := 
-            by 
-              simp only [binary_step]
-              rw [(if_neg (not_lt_of_le case2))]
-          exact Or.inl h
-
--- Proof that binary_step is nondecreasing
--- This is also a 'hello world' to see if I can
--- reason about a branching program.
---------------------------------------------------------------------
-theorem binary_step_nondecr (x₁ x₂ : ℚ) (hyp : x₁ ≤ x₂) :
-  (binary_step x₁ ≤ binary_step x₂) := by
---------------------------------------------------------------------
-    -- Simplify by applying the definition of binary_step.
-    simp [binary_step]
-    
-    cases (lt_or_ge 0 x₁) with
-    | inl case1 =>
-      cases (lt_or_ge 0 x₂) with
-      | inl case11 => 
-          -- Both sides evaluate to 1,
-          -- so we just prove that 1 ≤ 1.
-          rw [(if_pos case1)]
-          rw [(if_pos case11)]
-      | inr case12 => 
-          -- We have 0 < x₁ ≤ x₂ < 0,
-          -- so this case is absurd. 
-          exact absurd
-            (lt_of_lt_of_le case1 hyp)
-            (not_lt_of_le case12)
-    | inr case2 => 
-      cases (lt_or_ge 0 x₂) with
-      | inl case21 => 
-          -- We are in the second and first cases.
-          rw [(if_neg (not_lt_of_le case2))]
-          rw [(if_pos case21)]
-          exact (le_of_lt rfl)
-      | inr case22 => 
-          rw [(if_neg (not_lt_of_le case2))]
-          rw [(if_neg (not_lt_of_le case22))]
-
--------------------------------------------------
--- Feedforward neural nets
--------------------------------------------------
+-- [Definition 1] in our paper.
 structure Net where
   graph : Graph ℕ ℚ
   activation : ℚ → ℚ
   rate : ℚ -- learning rate
 
+-- The restrictions on our nets.  Note that 'acyclic' is
+-- not explitly included here, but depends on the user
+-- of our code not using graphs with cycles.  The
+-- fully-connected assumption is captured by
+--   - axiom connected
+-- stated later.
 structure BFNN extends Net where 
   -- The activation function is binary
   binary : ∀ (x : ℚ), 
@@ -261,9 +201,9 @@ structure BFNN extends Net where
   activ_pos : activation (is_active) = 1
 
 
+-- [Not included in paper]
 -- Because our activation function is bounded above by 1,
--- if act(x₁) = 1
--- then any act(x₂) greater than act(x₁) also = 1
+-- if act(x₁) = 1 then any act(x₂) greater than act(x₁) also = 1
 --------------------------------------------------------------------
 lemma activation_from_inequality (net : BFNN) (x₁ x₂ : ℚ) :
   net.activation x₁ ≤ net.activation x₂
@@ -290,7 +230,7 @@ variable (net : BFNN)
 def weighted_sum (weights : List ℚ) (lst : List ℚ) : ℚ :=
   List.foldr (· + ·) 0 (List.zipWith (· * ·) weights lst)
 
-
+-- Sanity checks
 #eval weighted_sum [] []
 #eval weighted_sum [1] [3.0]
 #eval weighted_sum [1, 2.0, 3.0] [5.0, 5.0, 5.0]
@@ -300,6 +240,9 @@ def weighted_sum (weights : List ℚ) (lst : List ℚ) : ℚ :=
 #eval weighted_sum [1, 2.0] [3.0]
 
 
+-- [Not included in paper]
+-- This is a technical lemma that need in order to prove
+-- [GOTO]
 --------------------------------------------------------------------
 lemma weighted_sum_eq (fw₁ fw₂ fx₁ fx₂ : ℕ → ℚ) (ls : List ℕ) :
   let x₁ : List ℚ := List.map (fun i => fx₁ i) (List.range ls.length)
@@ -325,7 +268,10 @@ lemma weighted_sum_eq (fw₁ fw₂ fx₁ fx₂ : ℕ → ℚ) (ls : List ℕ) :
   -- fw₁ i * fx₁ i = fw₂ i * fx₂ i,
   -- but this was exactly our assumption.
   exact funext fun i => h₁ i
-  
+
+-- [Not included in paper]
+-- This is a technical lemma that we need in order to prove
+-- [GOTO]
 --------------------------------------------------------------------
 lemma weighted_sum_le (fw₁ fw₂ fx₁ fx₂ : ℕ → ℚ) (ls : List ℕ) :
   let x₁ : List ℚ := List.map (fun i => fx₁ i) (List.range ls.length)
@@ -353,19 +299,27 @@ lemma weighted_sum_le (fw₁ fw₂ fx₁ fx₂ : ℕ → ℚ) (ls : List ℕ) :
     simp only [List.foldr]
     exact add_le_add (h₁ i) IH
 
--- WARNING:
--- This is actually FALSE!  For infinite sets, l[i] is not provably
--- in l (as far as I can figure.)
--- TODO: In the future, when making all this computable, I will
--- be using finite sets, and then I can use get instead of get!,
--- and get_mem in the standard library.
+-- [Not included in paper]
+-- This just says that for any list, the ith element of
+-- that list is in fact a member of that list.
+-- 
+-- WARNING: This is a hack!  For in infinite sets, l[i] is 
+-- not provably in l.  Our sets are finite, so we don't
+-- need to worry about this (we take this as an axiom).
+-- The fix for this is to replace all uses of 'Set' with
+-- 'FinSet' (finite sets), and all get!_mem with get_mem
+-- (that takes an explicit upper bound).
 axiom get!_mem {α : Type} [Inhabited α] : 
   ∀ (l : List α) i, (l.get! i) ∈ l
+
 
 @[simp]
 def preds (net : BFNN) (n : ℕ): List ℕ :=
   net.graph.predecessors n
 
+-- [Not included in paper]
+-- m is a predecessor of n iff (m, n) is an edge in the graph.
+-- (this is trivial to see, but two steps for Lean)
 --------------------------------------------------------------------
 theorem edge_from_preds (net : BFNN) (m n : ℕ) :
   m ∈ preds net n ↔ net.graph.hasEdge m n := by
@@ -373,7 +327,9 @@ theorem edge_from_preds (net : BFNN) (m n : ℕ) :
   simp only [preds, Graph.hasEdge]
   rw [Bool.decide_iff]
 
-
+-- [Definition 2] in our paper, although we define
+-- it in a way that makes it easier to do induction on.
+-- 
 -- Accumulator-style helper function for 'layer'
 -- Defined recursively on the *reverse* of the vertex list
 -- (this means we are looking at vertices backwards -- each
@@ -392,12 +348,17 @@ def layer_acc (net : BFNN) (n : ℕ) (ls : List ℕ) : ℕ :=
 
     else layer_acc net n rest
 
+-- [Definition 2] in our paper.
 -- The layer of n in the net
 def layer (net : BFNN) (n : ℕ) : ℕ :=
   layer_acc net n (net.graph.get_vertices.reverse)
 
+-- [Not included in paper]
 -- The layer relation layer[m] ≤ layer[n] is well-founded
--- (i.e. it has a least element)
+-- (i.e. it has a least element).  This is obvious, since
+-- we only have finitely many nodes in the net.  But
+-- since we're using Set instead of Finset, it's hard
+-- to convince Lean.
 --------------------------------------------------------------------
 lemma layer_wellfounded (net : BFNN) : 
   WellFounded (fun x y => layer net x ≤ layer net y) := by
@@ -405,21 +366,14 @@ lemma layer_wellfounded (net : BFNN) :
   exact WellFounded.wellFounded_iff_has_min.mpr 
     (fun S hS => sorry)
 
-
--- AXIOM: We assume the net is fully connected! 
--- (i.e. *transitively closed* in the paper, because
---  'fully connected' is often used in machine learning)
--- 
--- TODO: Write the equivalent 'transitively closed'
---   version, put it in the definition of BFNN,
---   and then prove this from that.
---   What I have here is the final statement I actually need.
+-- This is our assumption that the net is fully connected!
+-- Note that we're actually using the form from [Proposition 1]
+-- in the paper --- but this follows from our definition of
+-- fully connected in the paper.
 axiom connected : ∀ (net : BFNN) (m n : ℕ), 
   layer net m < layer net n → net.graph.hasEdge m n
 
--- If m is a predecessor of n, then it must be in a previous layer.
--- Proof idea:
--- layer(m)  ≤  max({layer(v) | v ∈ preds(n)})  <  layer(n)
+-- The other direction of [Proposition 1] in our paper.
 --------------------------------------------------------------------
 lemma preds_decreasing (net : BFNN) (m n : ℕ) :
   m ∈ preds net n 
@@ -441,58 +395,13 @@ lemma preds_decreasing (net : BFNN) (m n : ℕ) :
     rw [List.filter_nil] at h₁
     exact False.elim ((List.mem_nil_iff _).mp h₁)
     
-
   case cons v rest IH =>
-    simp only [layer_acc]
-    generalize hmax_m : (List.map (fun x => layer_acc net x rest) (preds net m)).maximum = max_m
-    generalize hmax_n : (List.map (fun x => layer_acc net x rest) (preds net n)).maximum = max_n
+    sorry
 
-    -- We branch out all of the possible cases
-    -- (we have 4 branches from the 'if-then-else's, 
-    -- and more for the 'match'es)
-    by_cases v = m
-    case pos => 
-      rw [if_pos h]
-      by_cases v = n
-      case pos => 
-        rw [if_pos h]
-        
-        match max_n with
-        | none => -- This case is also impossible;
-          -- m ∈ preds(n) means that there is *some* maximum in preds(n),
-          -- which contradicts the fact that the max is empty.
-          sorry
-
-        | some L => 
-          match max_m with
-          | none => exact Nat.succ_pos L
-          | some K => -- This is the tricky case!
-            simp
-            sorry
-
-      case neg => 
-        rw [if_neg h]
-        match max_m with
-        | none => 
-          simp
-          sorry
-        | some K => sorry
-
-    case neg =>
-      rw [if_neg h]
-      by_cases v = n
-      case pos => 
-        rw [if_pos h]
-        match max_n with
-        | none => sorry
-        | some L => sorry
-
-      case neg => 
-        rw [if_neg h]
-        exact IH sorry
-
--- NOTE: Although 'do' notation might be more readable here,
---       I avoid it because it's hard to reason about.
+-- Essentially, A(∑ wᵢ xᵢ) = 1.
+-- (the inner part of [Definition 4] in our paper.)
+-- Note that we do not need to define [Definition 3] in our
+-- Lean code.
 noncomputable
 def activ (net : BFNN) (prev_activ : List ℚ) (n : ℕ) : Prop :=
   let preds := preds net n
@@ -505,7 +414,8 @@ def activ (net : BFNN) (prev_activ : List ℚ) (n : ℕ) : Prop :=
   curr_activ = 1
 
 
--- FORWARD PROPAGATION IN A NET
+-- [Definition 4] in our paper.
+-- The forward propagation operator.
 -- By recursion on the layers of our feedforward network.
 -- (_acc indicates that we are using the layer as an accumulator
 --  to do recursion.)
@@ -531,19 +441,18 @@ def propagate_acc (net : BFNN) (S : Set ℕ) (n : ℕ) (L : ℕ) : Prop :=
 termination_by propagate_acc net S n L => layer net n
 decreasing_by exact preds_decreasing net m n (get!_mem preds i)
 
+-- [Definition 4] in our paper.
 -- Set variation of propagate
 @[simp]
 def propagate (net : BFNN) (S : Set ℕ) : Set ℕ :=
   fun n => propagate_acc net S n (layer net n)
 
 -------------------------------------------------
--- Some helper lemmas
+-- Some helper simplification lemmas
 -- (just to clean up the monstrous proofs ahead!)
--- 
--- TODO: Clean these up with nicer @simp lemmas about
--- propagate and activ
 -------------------------------------------------
 
+-- [Not included in paper]
 --------------------------------------------------------------------
 lemma simp_propagate_acc (net : BFNN) :
   n ∉ S
@@ -574,14 +483,11 @@ lemma simp_propagate_acc (net : BFNN) :
     simp only [propagate_acc] at h₂
     exact Or.inr h₂
 
-
+-- [Not included in paper]
 -- If A and B agree on all the predecessors of n, then they agree on n.
 -- This lemma is extremely inefficient to use.  In order to make it
 -- remotely usable, we've simplified everything down to unreadable
--- garbage.  In order to make use of it, I recommend:
---   - Applying 'simp' to your 'activ' hypotheses (get rid of any let's)
---   - Use 'exact' instead of 'apply' (exit tactic mode)
--- 
+-- garbage.
 --------------------------------------------------------------------
 lemma activ_agree (net : BFNN) (A B : Set ℕ) (n : ℕ) :
   (∀ (m : ℕ), m ∈ preds net n → (m ∈ A ↔ m ∈ B))
@@ -608,6 +514,8 @@ lemma activ_agree (net : BFNN) (A B : Set ℕ) (n : ℕ) :
   Properties of Propagation
 ══════════════════════════════════════════════════════════════════-/
 
+-- [Not included in paper, since it's essentially just the
+--  base case of 'propagate']
 --------------------------------------------------------------------
 lemma prop_layer_zero (net : BFNN) : ∀ (S : Set ℕ) (n : ℕ),
   layer net n = 0
@@ -623,6 +531,7 @@ lemma prop_layer_zero (net : BFNN) : ∀ (S : Set ℕ) (n : ℕ),
   simp only [propagate_acc] at h₁
   exact h₁
 
+-- [Proposition 2, part 1] in our paper.
 --------------------------------------------------------------------
 theorem propagate_is_extens : 
   ∀ (S : Set ℕ),
@@ -646,6 +555,7 @@ theorem propagate_is_extens :
     simp only [propagate_acc]
     exact Or.inl h₁
 
+-- [Proposition 2, part 1] in our paper.
 -- Corollary: The same statement, but for propagate_acc
 -- (this is a helper lemma for the properties that follow.)
 -------------------------------------------------
@@ -660,6 +570,7 @@ lemma propagate_acc_is_extens :
   exact h₂
   
 
+-- [Proposition 2, part 2] in our paper.
 --------------------------------------------------------------------
 theorem propagate_is_idempotent : 
   ∀ (S : Set ℕ),
@@ -740,9 +651,8 @@ theorem propagate_is_idempotent :
           exact activ_agree _ S₁ S₂ _ h₂ h₁
 
 
+-- [Proposition 2, part 3] in our paper.
 -- This is essentially Hannes' proof.
--- TODO: For consistency's sake, replace inner proof with
---   application of 'activ_agree'
 --------------------------------------------------------------------
 theorem propagate_is_cumulative :
   ∀ (A B : Set ℕ), A ⊆ B
@@ -873,21 +783,11 @@ theorem propagate_is_cumulative :
 -- using a path where all nodes are inside A (i.e. there is a 
 -- focusedPath from B to n).
 -- 
--- This is *precisely* what Van Benthem refers to as "conditional
--- common knowledge" (although here we don't need the word "common"
--- because we don't have group dynamics.)  
--- Quote:
--- CG(A, B) "is true in all worlds reachable via some finite path
--- of accessibilities running entirely through worlds satisfying A"
--- [Van Benthem, Belief Revision and Dynamic Logic, page 6]
--- In this paper, he also talks about "pre-encoding" future
--- information in order to get a reduction, which is exactly
--- what we're doing here!
--- 
 -- I don't know what the complete axioms are for this conditional
 -- knowledge.  But this isn't the main focus here.  I'll just
 -- prove a few sound things to give an idea about what it's like.
 
+-- [Not included in paper]
 -- A focused path is a path where every node is contained
 -- within the set S.
 inductive focusedPath (g : Graph ℕ ℚ) (S : Set ℕ) : ℕ → ℕ → Prop where
@@ -896,6 +796,7 @@ inductive focusedPath (g : Graph ℕ ℚ) (S : Set ℕ) : ℕ → ℕ → Prop w
   | from_path {u v w : ℕ} : 
       focusedPath g S u v → g.hasEdge v w → w ∈ S → focusedPath g S u w
 
+-- [Not included in paper]
 -- focusedPath is transitive
 --------------------------------------------------------------------
 theorem focusedPath_trans {u v w : ℕ} (g : Graph ℕ ℚ) (A : Set ℕ) :
@@ -909,6 +810,7 @@ theorem focusedPath_trans {u v w : ℕ} (g : Graph ℕ ℚ) (A : Set ℕ) :
   case from_path x y _ edge_xy hy path_ux => 
     exact focusedPath.from_path path_ux edge_xy hy
 
+-- [Not included in paper]
 -- focusedPath is contained in A
 --------------------------------------------------------------------
 theorem focusedPath_subset {u v : ℕ} (g : Graph ℕ ℚ) (A : Set ℕ) :
@@ -921,6 +823,7 @@ theorem focusedPath_subset {u v : ℕ} (g : Graph ℕ ℚ) (A : Set ℕ) :
   case from_path _ _ _ _ _ hA => exact hA
 
 
+-- [Definition 5] in our paper
 -- This is the set of all nodes reachable from B using
 -- paths where *every* node in the path is within A
 -- (including the initial and final nodes)
@@ -928,6 +831,8 @@ def reachable (net : BFNN) (A B : Set ℕ) : Set ℕ :=
   fun (n : ℕ) =>
     ∃ (m : ℕ), m ∈ B ∧ focusedPath net.graph A m n
 
+
+-- [Proposition 3, part 1] in our paper
 -- Argument: If there is a path from B to n, but n is in
 -- layer 0 -- there are *no* incoming nodes -- then the path
 -- must be of length 0.  So n must be that n ∈ B with
@@ -959,36 +864,7 @@ lemma reach_layer_zero (net : BFNN) : ∀ (A B : Set ℕ) (n : ℕ),
       
       exact absurd hL (Nat.not_eq_zero_of_lt h₃)
 
---------------------------------------------------------------------
-theorem reach_subset (net : BFNN) : ∀ (A B : Set ℕ),
-  reachable net A B ⊆ A := by
---------------------------------------------------------------------
-  intro (A : Set ℕ)
-        (B : Set ℕ)
-        (n : ℕ) (h₁ : n ∈ reachable net A B)
-  
-  simp only [Membership.mem, Set.Mem] at h₁
-  match h₁ with
-  | ⟨m, hm⟩ => 
-    induction hm.2
-    case trivial hbase => exact hbase
-    case from_path _ y _ _ hy _ => exact hy 
-
-
--- This is like propag_is_extens, except we also have to ensure
--- that n ∈ A.
---------------------------------------------------------------------
-theorem reach_is_extens (net : BFNN) : ∀ (A B : Set ℕ),
-  (A ∩ B) ⊆ reachable net A B := by
---------------------------------------------------------------------
-  intro (A : Set ℕ)
-        (B : Set ℕ)
-        (n : ℕ) (h₁ : n ∈ A ∩ B)
-
-  have (h₂ : focusedPath net.graph A n n) := 
-    focusedPath.trivial h₁.1
-  exact ⟨n, ⟨h₁.2, h₂⟩⟩
-
+-- [Proposition 3, part 2] in our paper
 -- If A ∩ B is empty, then there are no nodes reachable
 -- from B within A.
 -- (This does *not* follow from [reach_is_extens]!)
@@ -1018,7 +894,39 @@ theorem reach_empty_of_inter_empty (net : BFNN) : ∀ (A B : Set ℕ),
       case from_path x y path_mx _ _ IH => 
         exact IH ⟨m, ⟨hm.1, path_mx⟩⟩ ⟨hm.1, path_mx⟩
 
+-- [Proposition 3, part 3] in our paper
+--------------------------------------------------------------------
+theorem reach_subset (net : BFNN) : ∀ (A B : Set ℕ),
+  reachable net A B ⊆ A := by
+--------------------------------------------------------------------
+  intro (A : Set ℕ)
+        (B : Set ℕ)
+        (n : ℕ) (h₁ : n ∈ reachable net A B)
+  
+  simp only [Membership.mem, Set.Mem] at h₁
+  match h₁ with
+  | ⟨m, hm⟩ => 
+    induction hm.2
+    case trivial hbase => exact hbase
+    case from_path _ y _ _ hy _ => exact hy 
 
+
+-- [Proposition 3, part 4] in our paper
+-- This is like propag_is_extens, except we also have to ensure
+-- that n ∈ A.
+--------------------------------------------------------------------
+theorem reach_is_extens (net : BFNN) : ∀ (A B : Set ℕ),
+  (A ∩ B) ⊆ reachable net A B := by
+--------------------------------------------------------------------
+  intro (A : Set ℕ)
+        (B : Set ℕ)
+        (n : ℕ) (h₁ : n ∈ A ∩ B)
+
+  have (h₂ : focusedPath net.graph A n n) := 
+    focusedPath.trivial h₁.1
+  exact ⟨n, ⟨h₁.2, h₂⟩⟩
+
+-- [Proposition 3, part 5] in our paper
 --------------------------------------------------------------------
 theorem reach_is_idempotent (net : BFNN) : ∀ (A B : Set ℕ),
   reachable net A B = reachable net A (reachable net A B) := by
@@ -1040,7 +948,7 @@ theorem reach_is_idempotent (net : BFNN) : ∀ (A B : Set ℕ),
         | ⟨m, h₃⟩ =>
           ⟨m, ⟨h₃.1, focusedPath_trans _ A h₃.2 h₂.2⟩⟩)⟩)
 
-
+-- [Proposition 3, part 6] in our paper
 --------------------------------------------------------------------
 theorem reach_is_monotone (net : BFNN) : ∀ (S A B : Set ℕ),
   A ⊆ B → reachable net S A ⊆ reachable net S B := by
@@ -1054,7 +962,7 @@ theorem reach_is_monotone (net : BFNN) : ∀ (S A B : Set ℕ),
   exact match h₂ with
     | ⟨m, hm⟩ => ⟨m, ⟨h₁ hm.1, hm.2⟩⟩
 
-
+-- [Proposition 3, part 7] in our paper
 -- Reach is closed under union
 -- (This is really a consequence of monotonicity)
 --------------------------------------------------------------------
@@ -1092,6 +1000,7 @@ theorem reach_union (net : BFNN) : ∀ (S A B : Set ℕ),
   Naive (Unstable) Hebbian Update
 ══════════════════════════════════════════════════════════════════-/
 
+-- [Not included in paper]
 -- A function to map edges in the graph.  
 -- We update the edge weight x₁ ⟶ x₂, but we also allow information 
 -- about the *nodes* x₁ and x₂.
@@ -1103,20 +1012,20 @@ def map_edges (g : Graph ℕ ℚ) (f : ℕ → ℕ → ℚ → ℚ) : Graph ℕ 
   )})
 ⟩
 
+-- [Not included in paper]
+-- This is a very technical lemma that we need in order to prove
+-- [GOTO]
 --------------------------------------------------------------------
 lemma map_edges_apply (g : Graph ℕ ℚ) (f : ℕ → ℕ → ℚ → ℚ) (m n : ℕ) :
   (map_edges g f).getEdgeWeight m n = (f m n (g.getEdgeWeight m n)) := by
 --------------------------------------------------------------------
-  -- I have no idea... this one's tough, and it's hard to see
-  -- what's going on.
-  -- TODO: Reasoning about weights is hard!  Redefine getEdgeWeight!
   simp only [Graph.getEdgeWeight]
 
   match List.find? (fun x => decide (x.fst = n)) g.vertices[m]!.successors with
   | none => sorry
   | some ⟨_, weight⟩ => sorry
 
-
+-- Part of [Definition 9] in our paper
 -- For every m ⟶ n where m, n ∈ Prop(S), increase the weight
 -- of that edge by η * act(m) * act(n).
 noncomputable
@@ -1126,8 +1035,7 @@ def graph_update (net : BFNN) (g : Graph ℕ ℚ) (S : Set ℕ) : Graph ℕ ℚ 
     let activ_n := if n ∈ propagate net S then 1 else 0
     weight + (net.rate * activ_m * activ_n))
 
-
-
+-- [Not included in paper]
 -- This graph update does not affect the vertices of the graph.
 --------------------------------------------------------------------
 lemma graph_update_vertices (net : BFNN) (g : Graph ℕ ℚ) (S : Set ℕ) :
@@ -1139,7 +1047,7 @@ lemma graph_update_vertices (net : BFNN) (g : Graph ℕ ℚ) (S : Set ℕ) :
   -- Go in and compose the maps.  This seems to do the trick.
   conv => lhs; rw [List.map_map]
 
-
+-- [Not included in paper]
 -- This graph update does not affect the *successor/edge* structure
 -- of the graph (it only affects weights!!!)
 --------------------------------------------------------------------
@@ -1187,6 +1095,7 @@ lemma graph_update_successors (net : BFNN) (g : Graph ℕ ℚ) (S : Set ℕ) (n 
       rw [if_neg h]
       exact IH
 
+-- [Not included in paper]
 -- This graph update preserves whether the graph is acyclic.
 --------------------------------------------------------------------
 lemma graph_update_acyclic (net : BFNN) (g : Graph ℕ ℚ) (S : Set ℕ) :
@@ -1211,6 +1120,7 @@ lemma graph_update_acyclic (net : BFNN) (g : Graph ℕ ℚ) (S : Set ℕ) :
     case from_path x y path_ux edge_xy IH => 
       sorry
 
+-- [Definition 9] in our paper.
 -- A single step of Hebbian update.
 -- Propagate S through the net, and then increase the weights
 -- of all the edges x₁ ⟶ x₂ involved in that propagation
@@ -1226,6 +1136,7 @@ def hebb (net : BFNN) (S : Set ℕ) : BFNN :=
   Properties of Single-Iteration Hebbian Update
 ══════════════════════════════════════════════════════════════════-/
 
+-- Not included in our paper.
 -- First, we check that a single round of hebb preserves whether
 -- the graph is acyclic. (This is a rehash of graph_update_acyclic,
 -- but it helps to write it out so we can lift it later to hebb_star.)
@@ -1236,6 +1147,7 @@ lemma hebb_once_acyclic (net : BFNN) (S : Set ℕ) :
   simp only [hebb]
   rw [graph_update_acyclic]
 
+-- Not included in our paper.
 -- A single round of Hebbian update does not affect the vertices
 -- of the graph.
 --------------------------------------------------------------------
@@ -1245,6 +1157,7 @@ theorem hebb_once_vertices (net : BFNN) (S : Set ℕ) :
   simp only [hebb]
   rw [graph_update_vertices]
 
+-- Not included in our paper.
 -- A single round of Hebbian update does not affect the predecessors
 -- of any node.  To prove this, we just show that Hebbian update
 -- does not affect the vertices of the graph, or the successor
@@ -1266,7 +1179,7 @@ theorem hebb_once_preds (net : BFNN) (S : Set ℕ) (n : ℕ) :
   -- graph_update doesn't affect vertices of the graph
   case _ => exact graph_update_vertices _ (net.graph) _
 
-  
+  -- Not included in our paper.
 -- A single round of Hebbian update hebb does not affect which 
 -- neurons are on which layer of the net.
 --------------------------------------------------------------------
@@ -1303,6 +1216,7 @@ theorem hebb_once_layers (net : BFNN) (S : Set ℕ) :
       rw [if_neg h]
       exact IH
 
+-- Not included in our paper.
 -- A single round of Hebbian update hebb does not affect the 
 -- activation function.
 --------------------------------------------------------------------
@@ -1311,6 +1225,7 @@ theorem hebb_once_activation (net : BFNN) (S : Set ℕ) :
 --------------------------------------------------------------------
   exact rfl
 
+-- [Proposition 4] in our paper
 -- A single round of Hebbian update hebb does not affect graph 
 -- reachability (It only affects the edge weights)
 --------------------------------------------------------------------
@@ -1381,6 +1296,7 @@ theorem hebb_once_reach (net : BFNN) (A B : Set ℕ) :
             
           exact ⟨u, ⟨hu.1, (focusedPath.from_path hu.2 h₄ hy)⟩⟩
 
+-- [Proposition 5, part 2] in our paper
 -- If m ∉ Prop(A) or n ∉ Prop(A), then the weight of m ⟶ n in 
 -- the *once* updated net is the same as in the original net.
 --------------------------------------------------------------------
@@ -1404,6 +1320,7 @@ theorem hebb_once_weights_eq (net : BFNN) :
     rw [if_neg h₂]
     simp
 
+-- [Proposition 5, part 1] in our paper
 -- The weights of the new net are nondecreasing
 -- (One round of Hebbian update can only increase the weights)
 --------------------------------------------------------------------
@@ -1414,31 +1331,14 @@ theorem hebb_once_weights_le (net : BFNN) :
   simp only [hebb, graph_update]
 
   -- how do I just get the 'weight + blah' from the net??
+  sorry
 
-  sorry -- Weights are hard to reason about,
-        -- because of the 'match'!  Maybe redefine getEdgeWeights!
-
-/-
-intro h₁
-simp only [hebb, graph_update]
-rw [map_edges_apply _ _ _ _]
-
--- We have two cases; either m ∉ Prop(A) or n ∉ Prop(A).
--- In either case, the term that we're updating by reduces 
--- to weight + 0 = weight.
-cases h₁
-case inl h₂ => 
-  rw [if_neg h₂]
-  simp
-case inr h₂ => 
-  rw [if_neg h₂]
-  simp
--/
 
 /-══════════════════════════════════════════════════════════════════
   "Iterated"/Fixed-Point Naive Hebbian Update
 ══════════════════════════════════════════════════════════════════-/
 
+-- [Definition 10] in our paper
 -- We score neurons by the total sum of *negative* weights coming 
 -- into them.  The neuron with the lowest score is the least likely
 -- to activate (in the worst case where all of its negative signals
@@ -1451,13 +1351,14 @@ def neg_weight_score (net : BFNN) (n : ℕ) : ℚ :=
     else 0) 
     (preds net n))
 
-
+-- [Definition 10] in our paper
 -- NOTE: If there are no nodes to score, a value of 0 is fine.
 def min_score (net : BFNN) : WithTop ℚ :=
   let scores := List.map (fun n => neg_weight_score net n) net.graph.get_vertices
   scores.minimum
 
 
+-- A helper lemma for [Proposition 6] in our paper
 -- For a *given* n, the neg_weight_score is smaller than
 -- any possible weighted sum over activated predecessors of n.
 -- (i.e. no matter what the activation list 'x' is.)
@@ -1524,6 +1425,10 @@ lemma neg_weight_score_le (net : BFNN) (n : ℕ) (fx₁ : ℕ → Bool) :
         rw [Rat.mul_zero]
         exact add_le_add rfl IH
 
+-- [Proposition 6] in our paper
+-- (actually, this 'weighted_sum' should just be the inner term,
+-- but this does not affect the proofs in the file currently.
+-- It will affect us when we go on to prove hebb_updated_by.)
 -- The *minimum* score is smaller than any possible weighted sum
 -- (over activated predecessors of n) *for all n*.
 --------------------------------------------------------------------
@@ -1540,28 +1445,11 @@ lemma min_score_le (net : BFNN) (n : ℕ) (fx₁ : ℕ → Bool) :
   apply List.not_lt_minimum_of_mem'
   
   sorry
-  -- apply le_trans _ (neg_weight_score_le net n fx₁)
 
-
+-- Definition of 'iter' from our paper (below [Proposition 6])
 -- This is the exact number of iterations of Hebbian learning
 -- on 'net' and 'S' that we need to make the network unstable,
 -- i.e. any activation involved within Prop(S) simply goes through.
--- 
--- This is the trickiest part to get right -- we actually need
--- to *construct* this number, based on the net's activation
--- function and the edge weights within Prop(S)!
--- 
--- We first pick the neuron with the lowest 'neg_weight_score' n_min.
--- The number of iterations is that number which would (in the worst
--- case) guarantee that n_min gets activated.
--- 
--- If n_score is n_min's score, and X is that point at which
--- our activation function is guranteed to be 1, and η is the
--- learning rate, then we return
--- 
--- (X - n_score) / η   *(I think!)*
--- UPDATE: we can iterate a different number of times
--- FOR EACH m, n!  So we should take the *max* of all these!
 def no_times (net : BFNN) (S : Set ℕ) : ℕ :=
   -- mcs is the "max composite score"
   let (comp_scores : List ℚ) := sorry
@@ -1572,27 +1460,15 @@ def no_times (net : BFNN) (S : Set ℕ) : ℕ :=
   -- natural number.
   if mcs > 0 then 
     sorry
-    -- abs (round mcs)
+    -- abs (round mcs) -- figure out how to round in Lean
   else 1
 
-  -- HOW TO ROUND?  HOW TO DIVIDE?
-  -- net.active_input
-  
-  -- match net.activ_pos with
-  -- | ⟨t, ht⟩ => sorry 
-  
-  -- let x := choose net.activ_pos
-  -- have h₁ : net.activation x = 1 := sorry
-
-  -- let n_min := @List.minimum (Vertex ℕ ℚ) sorry sorry net.graph.vertices.toList
-  -- let n_score := sorry
-  -- sorry
-
+-- [Not included in paper]
 lemma no_times_pos (net : BFNN) (S : Set ℕ) :
   0 < no_times net S := by
   sorry
 
-
+-- Part of [Definition 11] in our paper
 -- For every m ⟶ n where m, n ∈ Prop(S), increase the weight
 -- of that edge by (no_times) * η * act(m) * act(n).
 noncomputable
@@ -1602,21 +1478,8 @@ def graph_update_star (net : BFNN) (g : Graph ℕ ℚ) (S : Set ℕ) : Graph ℕ
     let activ_n := if n ∈ propagate net S then 1 else 0
     weight + (↑(no_times net S) * net.rate * activ_m * activ_n))
 
+-- [Definition 11] in our paper
 -- Iterated Hebbian Update
--- 
--- First, note that if we iterate 'hebb' or 'graph_update' in the
--- usual way, all Prop(S) will change with each iteration.  
--- So instead, we bake the iteration into the weight update:
--- We keep adding to the weights relative to the *original* net's
--- Prop(S) values. 
--- 
--- Second, rather than iterating up to a fixed point, for unstable
--- Hebbian learning it's enough to take a specific finite number
--- of iterations.  In this case, that number is 'hebb_unstable_point'.
--- For more complicated learning algorithms, we would need to build
--- up lemmas about the fixed point of a graph.
--- 
--- FUTURE: Consider re-doing this using limits of graphs/categories
 noncomputable
 def hebb_star (net : BFNN) (S : Set ℕ) : BFNN :=
 { net with
@@ -1628,9 +1491,10 @@ def hebb_star (net : BFNN) (S : Set ℕ) : BFNN :=
   Properties of "Iterated" Naive Hebbian Update
 ══════════════════════════════════════════════════════════════════-/
 
+-- [Not included in paper]
 -- This lemma allows us to "lift" equational properties of hebb 
--- to hebb_star.  (This holds *because* hebb_star is the fixed point
--- of hebb.)
+-- to hebb_star.  (This is easy to see by induction on no_times/iter,
+-- but I couldn't figure out how to unpack the net in Lean in time.)
 --------------------------------------------------------------------
 theorem hebb_lift (net : BFNN) (S : Set ℕ) (P : BFNN → α) : 
   (P (hebb net S) = P net)
@@ -1662,7 +1526,7 @@ theorem hebb_lift (net : BFNN) (S : Set ℕ) (P : BFNN → α) :
     -- sorry
     
 
-
+-- [Not included in paper]
 -- Hebbian update hebb_star preserves the acyclicness of the graph.
 -- (So the updated net is still acyclic.)
 -- [LIFTED from hebb_once_acyclic]
@@ -1672,6 +1536,7 @@ lemma hebb_acyclic (net : BFNN) (S : Set ℕ) :
 --------------------------------------------------------------------
   exact hebb_lift _ _ (fun x => x.graph.is_acyclic) (hebb_once_acyclic _ _)
 
+-- [Not included in paper]
 -- Hebbian update hebb_star does not affect the vertices of the graph.
 --------------------------------------------------------------------
 theorem hebb_vertices (net : BFNN) (S : Set ℕ) : 
@@ -1679,6 +1544,7 @@ theorem hebb_vertices (net : BFNN) (S : Set ℕ) :
 --------------------------------------------------------------------
   exact hebb_lift _ _ (fun x => x.graph.get_vertices) (hebb_once_vertices _ _)
 
+-- [Not included in paper]
 -- Hebbian update hebb_star does not affect the predecessors
 -- of any node.
 -- [LIFTED from hebb_once_preds]
@@ -1688,6 +1554,7 @@ theorem hebb_preds (net : BFNN) (S : Set ℕ) :
 --------------------------------------------------------------------
   exact hebb_lift _ _ (fun x => preds x n) (hebb_once_preds _ _ _)
   
+-- [Not included in paper]
 -- Hebbian update hebb_star does not affect which neurons are
 -- on which layer of the net.
 -- [LIFTED from hebb_once_layers]
@@ -1697,6 +1564,7 @@ theorem hebb_layers (net : BFNN) (S : Set ℕ) :
 --------------------------------------------------------------------
   exact hebb_lift _ _ (fun x => layer x n) (hebb_once_layers _ _)
 
+-- [Not included in paper]
 -- Hebbian update hebb_star does not affect the activation function.
 -- [LIFTED from hebb_once_activation]
 --------------------------------------------------------------------
@@ -1705,6 +1573,7 @@ theorem hebb_activation (net : BFNN) (S : Set ℕ) :
 --------------------------------------------------------------------
   exact hebb_lift _ _ (fun x => x.activation) (hebb_once_activation _ _)
 
+-- [Proposition 8] in our paper
 -- Hebbian update hebb_star does not affect graph reachability
 -- (It only affects the edge weights)
 -- -- [LIFTED from hebb_once_reach]
@@ -1715,7 +1584,7 @@ theorem hebb_reach (net : BFNN) (A B : Set ℕ) :
 --------------------------------------------------------------------
   exact hebb_lift _ _ (fun x => reachable x A B) (hebb_once_reach _ _ _)
 
-
+-- [Proposition 9, part 2] in our paper
 -- If m ∉ Prop(A) or n ∉ Prop(A), then the edge m ⟶ n was not
 -- increased by Hebbian update.  So its weight in the updated
 -- net is the same as its weight in the original net.
@@ -1730,7 +1599,7 @@ theorem hebb_weights_eq (net : BFNN) :
   exact hebb_lift _ _ (fun x => x.toNet.graph.getEdgeWeight m n) 
     (hebb_once_weights_eq _ h₁)
 
- 
+-- [Proposition 9, part 1] in our paper
 -- The weights of the new net are nondecreasing
 -- (Hebbian update can only increase the weights)
 -- Note that we *cannot* lift this property straightforwardly,
@@ -1750,13 +1619,14 @@ theorem hebb_weights_le (net : BFNN) :
     exact absurd hpt (ne_of_gt (no_times_pos _ _))
   case succ k IH => 
     simp only [graph_update_star]
-    sorry -- Graph weights are hard to reason about because of 'match'!
+    sorry
 
 
 /-══════════════════════════════════════════════════════════════════
   The more interesting/crucial properties
 ══════════════════════════════════════════════════════════════════-/
 
+-- [Not included in paper]
 -- The lemma for 'activ' and 'hebb', essentially:
 -- activ net prev_activ n  ⟶  activ (hebb_star net A) prev_activ n
 --------------------------------------------------------------------
@@ -1791,7 +1661,7 @@ lemma hebb_activ_nondecreasing (net : BFNN) (A S : Set ℕ) (n : ℕ) :
     rw [if_pos h]
     simp [hebb_weights_le _]
 
-
+-- [Not included in paper]
 -- If n ∉ Prop(A), then activ (hebb_star net A) _ n = activ net _ n.
 --------------------------------------------------------------------
 theorem hebb_activ_equal₁ (net : BFNN) (A : Set ℕ) (prev_activ : List ℚ) :
@@ -1807,7 +1677,7 @@ theorem hebb_activ_equal₁ (net : BFNN) (A : Set ℕ) (prev_activ : List ℚ) :
     lhs; enter [1, 2, 1, 1, i]
     rw [hebb_weights_eq _ (Or.inr h₁)]
 
-
+-- [Not included in paper]
 -- If every *active* predecessor of n ∉ Prop(A), then
 -- activ (hebb_star net A) _ n = activ net _ n.
 -- Like activ_agree, we have to simplify the statement of this
@@ -1868,44 +1738,8 @@ theorem hebb_activ_equal₂ (net : BFNN) (A S : Set ℕ) :
     simp only [propagate, Membership.mem, Set.Mem] at h
     rw [if_neg h]
     simp
-    
 
-/-
-INTUITION:
-Prop$(S) = propagate (hebb_star net A) B
-
-m ∈ Prop$(B)
-m, n ∈ Prop(A)
-m ⟶ n
--------------
-n ∈ Prop$(B)
-
-∑ w*(mᵢ, n) * x_mᵢ = 
-  w*(m, n) * x_m (=1) + ∑ rest
-  w*(m, n) + ∑ rest
-  ≥ w*(m, n) + (N - 1) * min_score
-  = (w(m, n) + no_times * η) + (N - 1) * min_score
-  [since w(m, n) ≥ min_score, always] 
-  ≥  (min_score + no_times * η) + min_score * (N - 1)
-  
-  min_score + (no_times * η) + min_score * (N - 1) ≥ thres
-  SOLVE FOR NO_TIMES:
-  no_times = round ((thres - (N - 1) * min_score - min_score)  / η)
-           = round ((thres - N * min_score) / η)  <<<-------------
-
-min_score : minimum possible weighted sum across *all* n ∈ Net 
-N : num nodes in Net
-
-GOAL: thres ≤ ∑ w$(mᵢ, n) * x_mᵢ
-
-Act (thres) = 1
-Act (∑ w$(mᵢ, n) * x_mᵢ) = 1
-GOAL: n activated by (active) mᵢ ∈ preds(n)
------------------------
-n ∈ Prop$(B)
--/
-
-
+-- [Lemma 1] in our paper
 -- -- If *some* predecessor of n is ∈ Prop(A), and n ∈ Prop(A), then
 -- -- if m is activated in (hebb_star net) then n is too
 -- -- (the activation automatically goes through in (hebb_star net))
@@ -1933,24 +1767,12 @@ theorem hebb_activated_by (net : BFNN) (A B : Set ℕ) :
   rw [hebb_activation net A]
   rw [hebb_preds net A]
   
-  -- NOTE: This is one of the most crucial steps of the whole proof!
-  -- We have some point 't' at which the activation = 1.
-  -- Since the activation function is nondecreasing, we just have
-  -- to show that the inner weighted sum ≥ t. 
-  
-  -- 'net.active_input' is t; 'net.activ_pos' says that t is active.
-
-  -- match net.activ_pos with
-  -- | ⟨t, ht⟩ => 
   apply activation_from_inequality _ (net.active_input) _ _ (net.activ_pos)
   apply net.activ_nondecr _ _
   
   sorry
 
-        -- I have the proof written on paper, I should consult that.
-        -- Depends on things like the monotonicity of 'activation', etc.
-
-
+-- [Not included in paper]
 -- If all predecessors of n (and all predecessors of those, etc.)
 -- don't touch Prop(A) ∩ Prop(B), then n is activated in the
 -- updated net iff it was in the original net.
@@ -2109,7 +1931,7 @@ lemma hebb_before_intersection (net : BFNN) (A B : Set ℕ) (n : ℕ) :
         -- Finally, apply hebb_activ_equal₂.
         exact (hebb_activ_equal₂ net A B h₃).mpr h₂
 
-
+-- [Lemma 2, part 1] in our paper
 -- The updated propagation at least contains Prop(A) ∩ Prop(B).
 --------------------------------------------------------------------
 theorem hebb_extens (net : BFNN) (A B : Set ℕ) :
@@ -2212,7 +2034,7 @@ theorem hebb_extens (net : BFNN) (A B : Set ℕ) :
 
         exact (hebb_before_intersection _ _ _ n h₃).mpr h₁.2
 
-
+-- [Lemma 2, part 2] in our paper
 -- If there is a path within Prop(A) from B to n, then, since this
 -- path is updated in hebb_star, n ∈ Prop(B).
 -- This is the key lemma for the backwards direction of the 
@@ -2292,7 +2114,7 @@ theorem hebb_updated_path (net : BFNN) (A B : Set ℕ) :
           --  y is activ in hebb_star net
           exact hebb_activated_by net A B hy ⟨hpreds, hx_propA⟩ hx_propB
 
-
+-- [Lemma 2, part 3] in our paper
 -- Complementary to [hebb_updated_path]:
 --     Reach(Prop(A), Prop(B)) ⊆ Prop*(B)
 -- we have
@@ -2408,20 +2230,7 @@ theorem reach_of_hebb_prop (net : BFNN) (A B : Set ℕ) :
   Reduction for Unstable Hebbian Update
 ══════════════════════════════════════════════════════════════════-/
 
-/-
-Prop*(B) = propagate (hebb_star net A) B
-
-Prop(A) ∩ Prop(B) ⊆ Prop*(B)
-Reach(Prop(A), Prop(B)) ⊆ Prop*(B)
-Prop(A) ∩ Prop*(B) ⊆ Reach(Prop(A), Prop(B))
---------------------
-Prop*(B) = Prop(B ∪ Reach(Prop(A), Prop(B)))
--/
-/-
-⟦Tp⟧ = Propagate(⟦p⟧)
-⟦K(p, q)⟧ = Reach(⟦p⟧, ⟦q⟧)
--/
-
+-- [Theorem 3] in our paper
 --------------------------------------------------------------------
 theorem hebb_reduction (net : BFNN) (A B : Set ℕ) : 
   propagate (hebb_star net A) B =
@@ -2473,7 +2282,6 @@ theorem hebb_reduction (net : BFNN) (A B : Set ℕ) :
   --------------------------------
   case hi L IH => 
     apply Iff.intro
-    
 
     ---------------------
     -- Forward Direction
@@ -2713,7 +2521,7 @@ theorem hebb_reduction (net : BFNN) (A B : Set ℕ) :
         exact hebb_activ_nondecreasing net A S₂ _
           (activ_agree _ S₁ S₂ _ h₂ h₁)
 
-
+-- [Corollary 1] in our paper
 -- COROLLARY: If we plug in Prop(A) ∩ Prop(B) = ∅,
 -- then the update has no effect on the propagation!  
 --------------------------------------------------------------------
@@ -2737,23 +2545,3 @@ theorem hebb_reduction_empty (net : BFNN) (A B : Set ℕ) :
   rw [hebb_reduction net A B]
   rw [h₁]
   rw [Set.union_empty B]
-
-
-/-══════════════════════════════════════════════════════════════════
-  The Logic (Language and Semantics)
-══════════════════════════════════════════════════════════════════-/
-
-
-
-/-══════════════════════════════════════════════════════════════════
-  Inference Rules and Proof System
-══════════════════════════════════════════════════════════════════-/
-
-
-
-
-/-══════════════════════════════════════════════════════════════════
-  Soundness
-══════════════════════════════════════════════════════════════════-/
-
-
